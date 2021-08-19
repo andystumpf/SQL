@@ -1,0 +1,210 @@
+WITH calls AS
+  (SELECT contact_id,
+          agent_username,
+          initiationmethod,
+          transfercompletedtimestamp,
+          queue_duration,
+          agent_interactionduration,
+          convert_timezone('CST',initiationtimestamp) AS TIME,
+          CASE date_part(dow,convert_timezone('CST',initiationtimestamp))
+              WHEN 0 THEN 'Sunday'
+              WHEN 1 THEN 'Monday'
+              WHEN 2 THEN 'Tuesday'
+              WHEN 3 THEN 'Wednesday'
+              WHEN 4 THEN 'Thursday'
+              WHEN 5 THEN 'Friday'
+              WHEN 6 THEN 'Saturday'
+          END AS "DOW",
+          queue_name,
+          initiation-METHOD
+   FROM aws_connect
+   WHERE initiationmethod IN ('CALLBACK',
+                              'OUTBOUND',
+                              'INBOUND')
+     AND queue_name IN (‘queue1, ‘queue2’)
+     AND (initiationmethod != 'INBOUND'
+          OR transfercompletedtimestamp IS NULL)
+     AND convert_timezone('CST',initiationtimestamp)::date BETWEEN '{{ Start Date }}' AND '{{ End Date }}'), --AND convert_timezone('CST',initiationtimestamp)::date BETWEEN '2020-11-11' AND '2020-11-22'), --Use this line to backfill
+emails AS (
+SELECT DISTINCT casenumber,
+                origin,
+                employee coalesce(case_owner_role__c,
+                                  'Calls’) AS case_owner_role__c, 
+ convert_timezone('CST',createddate) AS TIME, 
+ TYPE, 
+ CASE date_part(dow,convert_timezone('CST',createddate)) 
+     WHEN 0 THEN 'Sunday' 
+     WHEN 1 THEN 'Monday' 
+     WHEN 2 THEN 'Tuesday' 
+     WHEN 3 THEN 'Wednesday' 
+     WHEN 4 THEN 'Thursday' 
+     WHEN 5 THEN 'Friday' 
+     WHEN 6 THEN 'Saturday' 
+ END AS "DOW"
+   FROM salesforce
+     WHERE origin IN ('Email', 
+                    'Web')
+     AND coalesce(category__c,'NA') NOT IN ('Spam') 
+     AND subject <> 'Undelivered Mail Returned TO Sender'
+     AND coalesce(issue__c,'NA') NOT IN ('Spam', 
+                                         'Zuora bounce-back')
+     AND (coalesce(issue__c,'NA') NOT IN ('Merged CASE')
+          OR origin = 'Chat')
+
+     AND convert_timezone('CST',createddate)::date BETWEEN '{{
+                                                           START Date }}' AND '{{
+                                                  END Date }}'), --AND convert_timezone('CST',createddate)::date BETWEEN '2020-11-11' AND '2020-11-22'), --Use this line to backfill
+all_calls AS
+  (SELECT TIME::date AS Cal_Date,
+          DOW AS "Day of Week",
+          count(DISTINCT contact_id) AS incoming_calls
+   FROM calls
+   GROUP BY DOW,
+            Cal_Date
+   ORDER BY TIME::date,
+            dow),
+answer_calls AS
+  (SELECT TIME::date AS Cal_Date,
+          count(DISTINCT contact_id) AS answered_calls
+   FROM calls
+   WHERE agent_username IS NOT NULL
+     AND queue_name NOT IN ('Billing',
+                            'Sales',
+                            'Support Outbound')
+   GROUP BY DOW,
+            Cal_Date
+   ORDER BY TIME::date,
+            dow), -- abandoned_calls AS
+-- (SELECT DOW, TIME::date AS Cal_Date, count(distinct contact_id) AS support_calls_abandoned
+-- FROM calls
+-- WHERE agent_username IS NULL
+-- AND agent_interactionduration IS NULL
+-- AND transfercompletedtimestamp IS NULL
+-- AND queue_name NOT IN ('Billing','Sales')
+-- GROUP BY DOW, Cal_Date
+-- ORDER BY TIME::date,
+--          dow),
+ main_calls AS
+  (SELECT TIME::date AS Cal_Date,
+          count(DISTINCT contact_id) AS supp_main_calls
+   FROM calls
+   WHERE queue_name = ‘Queue1
+     AND agent_username IS NOT NULL
+   GROUP BY DOW,
+            Cal_Date
+   ORDER BY TIME::date,
+            dow),
+ sideline AS
+  (SELECT TIME::date AS Cal_Date,
+          count(DISTINCT contact_id) AS sideline_calls
+   FROM calls
+   WHERE queue_name = ‘Queue2’
+     AND agent_username IS NOT NULL
+   GROUP BY DOW,
+            Cal_Date
+   ORDER BY TIME::date,
+            dow),
+ outbound AS
+  (SELECT TIME::date AS Cal_Date,
+          count(DISTINCT contact_id) AS outbound_calls
+   FROM calls
+   WHERE queue_name = 'Outbound'
+     AND agent_username IS NOT NULL
+   GROUP BY DOW,
+            Cal_Date
+   ORDER BY TIME::date,
+            dow),
+ sales_billing_all AS
+  (SELECT TIME::date AS Cal_Date,
+          count(DISTINCT contact_id) AS total_sales_billing_calls
+   FROM calls
+   WHERE queue_name IN ('Billing',
+                        'Sales')
+   GROUP BY DOW,
+            Cal_Date
+   ORDER BY TIME::date,
+            dow),
+ sales_billing_answer AS
+  (SELECT TIME::date AS Cal_Date,
+          count(DISTINCT contact_id) AS answered_sales_billing_calls
+   FROM calls
+   WHERE agent_username IS NOT NULL
+     AND queue_name IN ('Billing',
+                        'Sales')
+   GROUP BY DOW,
+            Cal_Date
+   ORDER BY TIME::date,
+            dow),
+ billing AS
+  (SELECT TIME::date AS Cal_Date,
+          count(DISTINCT contact_id) AS billing_calls
+   FROM calls
+   WHERE agent_username IS NOT NULL
+     AND queue_name IN ('Billing')
+   GROUP BY DOW,
+            Cal_Date
+   ORDER BY TIME::date,
+            dow),
+ sales AS
+  (SELECT TIME::date AS Cal_Date,
+          count(DISTINCT contact_id) AS sales_calls
+   FROM calls
+   WHERE agent_username IS NOT NULL
+     AND queue_name IN ('Sales')
+   GROUP BY DOW,
+            Cal_Date
+   ORDER BY TIME::date,
+- [ ]             dow),
+ chats AS
+  (SELECT TIME::date AS Cal_Date,
+          count(DISTINCT casenumber) AS chats
+   FROM emails
+   WHERE origin IN ('Chat')
+   GROUP BY Cal_Date),
+ twitter AS
+  (SELECT convert_timezone('CST',TIME)::date AS cal_date,
+          COUNT(DISTINCT tweetid) AS tweets
+   FROM twitter_tweets
+   WHERE convert_timezone('CST',TIME)::date BETWEEN '{{
+START Date }}' AND '{{ END Date }}' --WHERE convert_timezone('CST',TIME)::date BETWEEN '2020-11-11' AND '2020-11-22' --Use this line to backfill
+
+   GROUP BY cal_date)
+SELECT d.caldate,
+       d.weeknum,
+       d.month,
+       d.year,
+       CASE d.weekday
+           WHEN 0 THEN 'Sunday'
+           WHEN 1 THEN 'Monday'
+           WHEN 2 THEN 'Tuesday'
+           WHEN 3 THEN 'Wednesday'
+           WHEN 4 THEN 'Thursday'
+           WHEN 5 THEN 'Friday'
+           WHEN 6 THEN 'Saturday'
+       END AS "Day of Week",
+coalesce(incoming_support_calls,0) AS incoming_support_calls,
+coalesce(support_answered_calls,0) AS support_answered_calls,
+coalesce(support_calls_abandoned,0) AS support_calls_abandoned,
+coalesce(supp_main_calls,0) AS supp_main_calls,
+coalesce(outbound_calls,0) AS outbound_calls,
+coalesce(total_sales_billing_calls,0) AS total_sales_billing_calls,
+coalesce(answered_sales_billing_calls,0) AS answered_sales_billing_calls,
+coalesce(billing_calls,0) AS billing_calls,
+coalesce(sales_calls,0) AS sales_calls,
+coalesce(chats,0) AS chats,
+coalesce(tweets,0) AS tweets
+FROM date_table d
+LEFT JOIN all_calls a ON d.caldate = a.cal_date -- LEFT JOIN abandoned_calls ab ON d.caldate = ab.cal_date
+LEFT JOIN answer_calls an ON d.caldate = an.cal_date
+LEFT JOIN main_calls m ON d.caldate = m.cal_date
+LEFT JOIN outbound o ON d.caldate = o.cal_date
+LEFT JOIN sales_billing_all sb_all ON d.caldate = sb_all.cal_date
+LEFT JOIN sales_billing_answer sb_a ON d.caldate = sb_a.cal_date
+LEFT JOIN billing s ON d.caldate = s.cal_date
+LEFT JOIN sales b ON d.caldate = b.cal_date
+LEFT JOIN chats c ON d.caldate = c.cal_date
+LEFT JOIN twitter t ON d.caldate = t.cal_date
+WHERE d.caldate::date BETWEEN '{{
+START Date }}' AND '{{ END Date }}' --WHERE d.caldate::date BETWEEN '2020-11-11' AND '2020-11-22' --Use this line to backfill
+ORDER BY d.caldate,
+         a."Day of Week"
